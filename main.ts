@@ -19,12 +19,15 @@
 //      the program still delivers byte-identical results offline.
 //   4. Before exiting it audits its own delivery: the output must be
 //      a genuine PNG of exactly 1024 x 1024, at most 1 MiB, built
-//      from exactly 42 stories; anything else exits non-zero.
+//      from exactly 42 stories (seven per section, none of them
+//      empty); it logs the output's SHA-256, and anything failing a
+//      check exits non-zero.
 //
 // Run locally with:  MAKEFUN_OUTPUT_DIR=out node main.ts
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -228,20 +231,42 @@ if (!freshRender) {
 }
 
 // ------------------------------------------------------------ audit
+// Revision (second builder session): the audit used to trust the
+// totals alone, so a section that silently lost a story while another
+// gained one would still pass at 42. It now checks the shape of the
+// data itself — exactly seven stories per section, no empty headline
+// or context line, a three-item lead band and a non-empty ticker —
+// and it records the SHA-256 of the delivered bytes, so a reviewer
+// can confirm that a re-run produced the exact same file without
+// opening the image. None of this touches the typesetting above, so
+// the rendered PNG stays byte-identical.
 const bytes = readFileSync(target);
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const magicOk = PNG_MAGIC.every((b, i) => bytes[i] === b);
 const pxW = bytes.readUInt32BE(16);
 const pxH = bytes.readUInt32BE(20);
 const storyTotal = SECTIONS.reduce((n, s) => n + s.stories.length, 0);
+const sha256 = createHash("sha256").update(bytes).digest("hex");
 const problems = [];
 if (!magicOk) problems.push("output is not a PNG");
 if (pxW !== PAGE || pxH !== PAGE) problems.push(`dimensions ${pxW}x${pxH}, expected 1024x1024`);
 if (bytes.length > MAX_BYTES) problems.push(`size ${bytes.length} exceeds 1 MiB`);
 if (storyTotal !== 42) problems.push(`story count ${storyTotal}, expected 42`);
 if (SECTIONS.length !== 6) problems.push(`section count ${SECTIONS.length}, expected 6`);
+SECTIONS.forEach((section) => {
+  if (section.stories.length !== 7) {
+    problems.push(`section ${section.title} has ${section.stories.length} stories, expected 7`);
+  }
+  section.stories.forEach(([headline, context], j) => {
+    if (!headline?.trim() || !context?.trim()) {
+      problems.push(`section ${section.title} story ${j + 1} has an empty headline or context`);
+    }
+  });
+});
+if (LEAD.length !== 3) problems.push(`lead band has ${LEAD.length} items, expected 3`);
+if (!TICKER.trim()) problems.push("markets ticker is empty");
 if (problems.length > 0) {
   console.error("FAIL: " + problems.join("; "));
   process.exit(1);
 }
-console.log(`OK entry.png: ${pxW}x${pxH}, ${bytes.length} bytes, ${storyTotal} stories in ${SECTIONS.length} sections, freshRender=${freshRender}, delivered to ${target}`);
+console.log(`OK entry.png: ${pxW}x${pxH}, ${bytes.length} bytes, sha256=${sha256}, ${storyTotal} stories in ${SECTIONS.length} sections, freshRender=${freshRender}, delivered to ${target}`);
